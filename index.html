@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Slow Roads — Prototype</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  html,body { height:100%; margin:0; overflow:hidden; background:#101217; font-family:Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; color:#e6eef8; }
+  #ui { position: absolute; left:12px; top:12px; z-index:20; background: rgba(2,6,12,0.45); padding:10px; border-radius:8px; min-width:220px;}
+  #ui .small { font-size:13px; opacity:0.9; }
+  #score { font-weight:700; font-size:18px; margin-top:6px; }
+  #loading { position: absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:20; color:#dfefff; background:rgba(0,0,0,0.35); padding:10px 14px; border-radius:8px;}
+  #hint { position:absolute; right:12px; top:12px; z-index:20; background:rgba(255,255,255,0.03); padding:8px; border-radius:8px; color:#bcd; font-size:13px; }
+  #gameover { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:30; display:none; text-align:center; }
+  #gameover h1 { margin:0 0 8px 0; font-size:28px; color:#fff; }
+  #gameover button { padding:8px 12px; border-radius:8px; border:0; cursor:pointer; background:#64b5f6; color:#022; font-weight:600; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+  <div id="ui">
+    <div class="small">A / D — steer &nbsp; • &nbsp; R — reset</div>
+    <div id="score">Score: 0</div>
+    <div id="speed" class="small">Speed: 0 km/h</div>
+  </div>
+  <div id="hint">Procedural road • Low-poly • Single-file prototype</div>
+  <div id="loading">Initializing…</div>
+
+  <div id="gameover">
+    <h1 id="goText">You fell off</h1>
+    <div style="margin-bottom:10px">Final Score: <span id="finalScore">0</span></div>
+    <button id="restartBtn">Restart</button>
+  </div>
+
+<script type="module">
+// Slow Roads — single-file prototype
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.156.0/build/three.module.js';
+import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.156.0/examples/jsm/controls/OrbitControls.js';
+
+const $loading = document.getElementById('loading');
+const $score = document.getElementById('score');
+const $speed = document.getElementById('speed');
+const $gameover = document.getElementById('gameover');
+const $finalScore = document.getElementById('finalScore');
+const $restart = document.getElementById('restartBtn');
+
+let width = innerWidth, height = innerHeight;
+
+// Renderer
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(width, height);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+// Scene & camera
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0f1724);
+scene.fog = new THREE.Fog(0x0f1724, 30, 600);
+
+const camera = new THREE.PerspectiveCamera(55, width/height, 0.1, 2000);
+camera.position.set(0, 6, -14);
+
+// Controls (for dev)
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enabled = false;
+controls.maxPolarAngle = Math.PI/2.2;
+
+// Lighting — soft, warm
+const hemi = new THREE.HemisphereLight(0xf0f8ff, 0x202533, 0.9);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff6e6, 0.7);
+sun.position.set(120, 200, 80);
+sun.castShadow = true;
+scene.add(sun);
+
+// Ground ambient rim - large plane to catch rays
+const groundMat = new THREE.MeshStandardMaterial({ color:0x0d1b22, roughness: 1, metalness:0 });
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(4000,4000), groundMat);
+ground.rotation.x = -Math.PI/2;
+ground.position.y = -200;
+scene.add(ground);
+
+// ---------- Road generator (spline of control points) ----------
+class Road {
+  constructor(){
+    this.segmentLen = 12;
+    this.segments = 200; // how many points to create ahead (expandable)
+    this.points = [];
+    this.roadMesh = null;
+    this.width = 6;
+    this.sideGeometry = new THREE.BufferGeometry();
+    this.createBaseSpline();
+    this.makeMesh();
+    scene.add(this.roadMesh);
+  }
+  createBaseSpline(){
+    // create an initial random spline path
+    this.points = [];
+    let x=0, z=0, angle=0;
+    for(let i=0;i<this.segments;i++){
+      // gentle wandering
+      angle += (Math.random()-0.5) * 0.28;
+      z += this.segmentLen * (0.95 + Math.random()*0.2);
+      x += Math.sin(angle) * 6;
+      const y = Math.sin((x+z)*0.006)*1.2;
+      this.points.push(new THREE.Vector3(x, y, z));
+    }
+  }
+  makeMesh(){
+    // build a strip mesh along the spline
+    const positions = [];
+    const normals = [];
+    const uvs = [];
+    const indices = [];
+    for(let i=0;i<this.points.length-1;i++){
+      const p0 = this.points[i];
+      const p1 = this.points[i+1];
+      const dir = new THREE.Vector3().subVectors(p1, p0).normalize();
+      const left = new THREE.Vector3(-dir.z, 0, dir.x).normalize();
+      const right = left.clone().negate();
+      const w = this.width/2;
+      // left and right verts
+      positions.push(p0.x + left.x*w, p0.y, p0.z + left.z*w);
+      positions.push(p0.x + right.x*w, p0.y, p0.z + right.z*w);
+      normals.push(0,1,0); normals.push(0,1,0);
+      uvs.push(0, i/(this.points.length-1)); uvs.push(1, i/(this.points.length-1));
+    }
+    // last segment end caps
+    const last = this.points.length-1;
+    const pL = this.points[last];
+    positions.push(pL.x - 1, pL.y, pL.z); positions.push(pL.x +1, pL.y, pL.z);
+    normals.push(0,1,0); normals.push(0,1,0);
+    uvs.push(0,1); uvs.push(1,1);
+
+    // indices
+    const rows = this.points.length;
+    for(let i=0;i<rows-1;i++){
+      const a = i*2, b = a+1, c = a+2, d = a+3;
+      indices.push(a,c,b);
+      indices.push(c,d,b);
+    }
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+    geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs,2));
+    geom.setIndex(indices);
+    geom.computeVertexNormals();
+
+    // remove old
+    if(this.roadMesh) scene.remove(this.roadMesh);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x263244,
+      roughness: 0.9,
+      metalness: 0.05,
+      side: THREE.DoubleSide
+    });
+
+    // center dashed line
+    const stripe = new THREE.Mesh(geom, mat);
+    stripe.receiveShadow = true; stripe.castShadow = false;
+    this.roadMesh = stripe;
+
+    // add painted centerline separately (thin mesh)
+    this.makeCenterLine();
+  }
+
+  makeCenterLine(){
+    const pts = [];
+    for(let i=0;i<this.points.length;i++){
+      const p = this.points[i];
+      pts.push(new THREE.Vector3(p.x, p.y+0.01, p.z));
+    }
+    // dashed centerline: draw small boxes along the spline
+    if(this._centerGroup) scene.remove(this._centerGroup);
+    const group = new THREE.Group();
+    const boxGeo = new THREE.BoxGeometry(0.3, 0.02, 3.5);
+    const mat = new THREE.MeshStandardMaterial({ color: 0xfff1b8, roughness:1 });
+    for(let i=0;i<pts.length;i+=6){
+      const p = pts[i], p2 = pts[Math.min(i+1, pts.length-1)];
+      const m = new THREE.Mesh(boxGeo, mat);
+      m.position.copy(p);
+      const dir = new THREE.Vector3().subVectors(p2,p).normalize();
+      const ang = Math.atan2(dir.x, dir.z);
+      m.rotation.y = ang;
+      m.receiveShadow = false;
+      group.add(m);
+    }
+    this._centerGroup = group;
+    scene.add(group);
+  }
+
+  // sample nearest point on road projecting by z (simple)
+  sampleClosest(pos){
+    // find sample with minimal distance in XZ plane after matching approximate segment by z
+    let best = 0; let bestD = 1e9;
+    for(let i=0;i<this.points.length;i++){
+      const p = this.points[i];
+      const dx = p.x - pos.x; const dz = p.z - pos.z;
+      const d = dx*dx + dz*dz;
+      if(d < bestD){ bestD = d; best=i; }
+    }
+    return { index: best, point: this.points[best], tangent: this.points[Math.min(best+1,this.points.length-1)].clone().sub(this.points[Math.max(0,best-1)]).normalize() };
+  }
+}
+
+// ---------- Simple low-poly car ----------
+function makeCar(){
+  const root = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.2,0.35,2.3), new THREE.MeshStandardMaterial({ color:0xa8e6ff, roughness:0.6 }));
+  body.position.y = 0.5;
+  body.castShadow = true;
+  root.add(body);
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(1.05,0.35,1.1), new THREE.MeshStandardMaterial({ color:0x306d90, roughness:0.6 }));
+  cab.position.set(0,0.88,-0.05);
+  root.add(cab);
+  const wheelGeo = new THREE.CylinderGeometry(0.22,0.22,0.4,12);
+  wheelGeo.rotateZ(Math.PI/2);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x0b0b0b, roughness:0.8 });
+  const ws = [[-0.55,0.22,-0.9],[0.55,0.22,-0.9],[-0.55,0.22,0.9],[0.55,0.22,0.9]];
+  for(const p of ws){ const w = new THREE.Mesh(wheelGeo,wheelMat); w.position.set(p[0],p[1],p[2]); w.castShadow = true; root.add(w); }
+  return root;
+}
+
+// ---------- Scene setup ----------
+const road = new Road();
+
+// vegetation / props (low-poly stylized)
+const trees = new THREE.Group();
+for(let i=0;i<120;i++){
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,1,6), new THREE.MeshStandardMaterial({ color:0x3a2b20 }));
+  const crown = new THREE.Mesh(new THREE.ConeGeometry(0.9,1.2,8), new THREE.MeshStandardMaterial({ color: 0x2c6b52 }));
+  const g = new THREE.Group();
+  trunk.position.y = 0.5; crown.position.y = 1.05;
+  g.add(trunk); g.add(crown);
+  const sp = road.points[Math.floor(Math.random()*road.points.length)];
+  g.position.set(sp.x + (Math.random()-0.5)*20, sp.y - 0.8, sp.z + (Math.random()-0.5)*30);
+  g.scale.setScalar(0.9 + Math.random()*1.6);
+  trees.add(g);
+}
+scene.add(trees);
+
+// car instance
+const car = makeCar();
+car.position.copy(road.points[0]).add(new THREE.Vector3(0,0.8,-2));
+scene.add(car);
+
+// physics-like state
+const carState = {
+  pos: car.position.clone(),
+  quat: car.quaternion.clone(),
+  velocity: new THREE.Vector3(0,0,6), // initial forward speed
+  steer: 0,
+  mass: 1200
+};
+
+// controls
+const keys = { left:false, right:false };
+window.addEventListener('keydown', e => {
+  if(e.key === 'a' || e.key === 'A') keys.left = true;
+  if(e.key === 'd' || e.key === 'D') keys.right = true;
+  if(e.key === 'r' || e.key === 'R') restart();
+});
+window.addEventListener('keyup', e => {
+  if(e.key === 'a' || e.key === 'A') keys.left = false;
+  if(e.key === 'd' || e.key === 'D') keys.right = false;
+});
+
+// camera chase
+let chase = true;
+function updateCamera(dt){
+  const desired = car.position.clone().add(new THREE.Vector3(0, 2.8, -8).applyQuaternion(car.quaternion));
+  camera.position.lerp(desired, 1 - Math.pow(0.003, dt));
+  const lookAt = car.position.clone().add(new THREE.Vector3(0,1.1,2).applyQuaternion(car.quaternion));
+  camera.lookAt(lookAt);
+}
+
+// checkpoints (collectible rings) along road
+const checkpoints = [];
+const cpMat = new THREE.MeshStandardMaterial({ color: 0xffe082, roughness: 0.6, metalness: 0 });
+for(let i=50;i<road.points.length;i+=28){
+  const p = road.points[i];
+  const ringGeo = new THREE.TorusGeometry(1.1, 0.12, 8, 40);
+  const ring = new THREE.Mesh(ringGeo, cpMat);
+  ring.position.set(p.x, p.y + 1.2, p.z);
+  ring.rotation.x = Math.PI/2;
+  ring.userData = { index:i, collected:false };
+  scene.add(ring);
+  checkpoints.push(ring);
+}
+
+// simple UI + scoring
+let score = 0;
+function collectCheckpoint(cp){
+  if(cp.userData.collected) return;
+  cp.userData.collected = true;
+  // scale pop
+  new Ticker(cp, 'scale', 1.0, 1.8, 0.18);
+  score += 10;
+  $score.textContent = `Score: ${score}`;
+}
+
+// helper tiny tween for visuals
+class Ticker {
+  constructor(obj, prop, from, to, dur){
+    this.obj = obj; this.prop = prop; this.from = from; this.to = to; this.dur = dur; this.t=0;
+    this.active=true; tickers.push(this);
+    if(this.obj) this.obj[this.prop] = from;
+  }
+  update(dt){
+    if(!this.active) return;
+    this.t += dt;
+    const p = Math.min(1, this.t/this.dur);
+    const v = this.from + (this.to - this.from) * (1 - Math.cos(p*Math.PI)) / 2;
+    if(this.obj) this.obj[this.prop] = v;
+    if(p>=1){ this.active=false; }
+  }
+}
+const tickers = [];
+
+// simple collision: if car is far from road centerline, slow it and maybe game over
+function roadDistance(pos){
+  const sample = road.sampleClosest(pos);
+  // lateral distance in XZ
+  const dx = pos.x - sample.point.x;
+  const dz = pos.z - sample.point.z;
+  const lateral = Math.sqrt(dx*dx + dz*dz);
+  // use tangent for sign
+  return { lateral, sample };
+}
+
+// game-over check
+let gameOver = false;
+function endGame(reason){
+  gameOver = true;
+  $finalScore.textContent = score;
+  document.getElementById('goText').textContent = reason;
+  $gameover.style.display = 'block';
+}
+
+// restart
+function restart(){
+  // reset car to start
+  car.position.copy(road.points[0]).add(new THREE.Vector3(0,0.8,-2));
+  car.quaternion.set(0,0,0,1);
+  carState.velocity.set(0,0,6);
+  score = 0; $score.textContent = 'Score: 0';
+  // un-collect checkpoints
+  for(const cp of checkpoints){ cp.userData.collected=false; cp.scale.set(1,1,1); cp.visible=true; }
+  gameOver = false; $gameover.style.display = 'none';
+}
+
+// timing & loop
+let last = performance.now();
+$loading.style.display = 'none';
+
+// main update
+function update(){
+  const now = performance.now();
+  let dt = (now - last)/1000;
+  if(dt>0.05) dt = 0.05;
+  last = now;
+
+  if(!gameOver){
+    // steering input
+    const steerInput = (keys.left ? 1 : 0) - (keys.right ? 1 : 0);
+    carState.steer = THREE.MathUtils.lerp(carState.steer, steerInput*0.45, dt*4);
+
+    // forward acceleration is implicit: keep velocity magnitude trending upward slowly
+    const forwardDir = new THREE.Vector3(0,0,1).applyQuaternion(car.quaternion).normalize();
+
+    // speed control (min/max)
+    const minSpeed = 2; const maxSpeed = 18;
+    // if lateral is large -> off-road friction reduction; sample to check
+    const rd = roadDistance(car.position);
+    const offroadPenalty = Math.max(0, (rd.lateral - (road.width/2)) * 0.08);
+    // accelerate gently
+    const speedScalar = THREE.MathUtils.clamp(carState.velocity.length() + (1.4 - offroadPenalty)*dt*1.6, minSpeed, maxSpeed);
+    carState.velocity.copy(forwardDir.multiplyScalar(speedScalar));
+
+    // yaw rotation from steer
+    const yaw = carState.steer * 0.72 * (carState.velocity.length()/8);
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), yaw*dt);
+    car.quaternion.multiplyQuaternions(q, car.quaternion);
+
+    // advance position
+    car.position.addScaledVector(carState.velocity, dt);
+
+    // vertical follow to road height
+    const s = road.sampleClosest(car.position);
+    car.position.y = THREE.MathUtils.lerp(car.position.y, s.point.y + 0.55, dt*8);
+
+    // update camera
+    updateCamera(dt);
+
+    // update speed display (km/h)
+    $speed.textContent = Math.round(carState.velocity.length()*3.6);
+
+    // checkpoint collisions
+    for(const cp of checkpoints){
+      if(cp.userData.collected) continue;
+      const d = cp.position.distanceToSquared(car.position);
+      if(d < 1.6*1.6){
+        cp.userData.collected = true;
+        // shrink & hide
+        cp.visible = false;
+        score += 10;
+        $score.textContent = `Score: ${score}`;
+      }
+    }
+
+    // off-road death if too far and slow
+    if(rd.lateral > 28){
+      endGame('You left the road');
+    }
+
+    // small tilt to reflect turning
+    const roll = -carState.steer * 0.25;
+    car.rotation.z = THREE.MathUtils.lerp(car.rotation.z, roll, dt*6);
+  }
+
+  // update tickers
+  for(let i=tickers.length-1;i>=0;i--){ tickers[i].update(dt); if(!tickers[i].active) tickers.splice(i,1); }
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(update);
+}
+
+// start
+update();
+
+// restart button
+$restart.addEventListener('click', restart);
+
+// allow clicking to resume controls (for some browsers)
+renderer.domElement.addEventListener('click', () => { renderer.domElement.focus(); });
+
+</script>
+</body>
+</html>
